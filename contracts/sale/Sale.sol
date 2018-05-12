@@ -48,6 +48,7 @@ contract Sale is Ownable, Token {
         if(address(this).balance < SOFT_CAP) {
             curState = STATE.NEEDTOREFUND;
         } else {
+            ETHWallet.transfer(address(this).balance);
             curState = STATE.SUCCESS;
         }
         emit UpdateStatus(msg.sender, curState);
