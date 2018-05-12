@@ -20,11 +20,13 @@ contract Sale is Ownable, Token {
     STATE public curState = STATE.PREPARE;
 
     mapping (address => uint) public heldTokens;
-    mapping (address => uint) public whiteListCap;
+    mapping (address => uint) public whiteList;
 
+    event AddWhiteList(address to, uint maxCap);
     event Contribution(address from, uint amountToken);
     event UpdateStatus(address from, STATE state);
     event Refund(address to, uint amount);
+    event SendBeneficiary(address to, uint amount);
 
     using SafeMath for uint256;
 
@@ -32,10 +34,17 @@ contract Sale is Ownable, Token {
         ETHWallet = _wallet;
     }
 
+    function addWhiteList(address _address, uint _maxCap) external onlyOwner {
+        require(whiteList[_address] == 0, "This address is already in whitelist.");
+        require(curState == STATE.PREPARE, "You can add someone into whitelist only before the sale initiates.");
+        whiteList[_address] = _maxCap;
+        emit AddWhiteList(_address, _maxCap);
+    }
+
     function initSale() external onlyOwner {
-        require(now >= startTime, "You can initialize this sale only after May 9 00:00 AM(UTC).");
-        require(now <= endTime, "You can initialize this sale only before May 11 02:00 AM(UTC).");
-        require(curState == STATE.PREPARE, "The sale was already initialized.");
+        require(now >= startTime, "You can initiate this sale only after May 9 00:00 AM(UTC).");
+        require(now <= endTime, "You can initiate this sale only before May 11 02:00 AM(UTC).");
+        require(curState == STATE.PREPARE, "The sale was already initiated.");
         curState = STATE.ACTIVE;
         emit UpdateStatus(msg.sender, curState);
     }
@@ -48,7 +57,7 @@ contract Sale is Ownable, Token {
         if(address(this).balance < SOFT_CAP) {
             curState = STATE.NEEDTOREFUND;
         } else {
-            ETHWallet.transfer(address(this).balance);
+            _sendBeneficiary();
             curState = STATE.SUCCESS;
         }
         emit UpdateStatus(msg.sender, curState);
@@ -60,24 +69,34 @@ contract Sale is Ownable, Token {
 
     function buy(address _receiver) public payable {
         require(_receiver != address(0), "The address can't be zero.");
+        require(whiteList[_receiver] > 0, "This address either doesn't exist in whitelist or already reached max cap.");
         require(msg.value > 0, "The amount of ETH must be greater than zero.");
         require(curState == STATE.ACTIVE, "The sale isn't currently in progress.");
-        
+
         uint amountWei = msg.value;
-        if(address(this).balance > MAX_CAP) {
-            uint surplus = address(this).balance.sub(MAX_CAP);
-            amountWei = msg.value.sub(surplus);
-            _receiver.transfer(surplus);
-            _addContributor(msg.sender, amountWei.mul(exchangeRate));
+        if(amountWei > whiteList[_receiver]) {
+            uint surplusIndividual = amountWei.sub(whiteList[_receiver]);
+            amountWei = amountWei.sub(surplusIndividual);
+            _receiver.transfer(surplusIndividual);
         }
 
-        uint amountToken = amountWei.mul(exchangeRate);
-        _addContributor(msg.sender, amountToken);
+        if(address(this).balance > MAX_CAP) {
+            uint surplusTotal = address(this).balance.sub(MAX_CAP);
+            amountWei = amountWei.sub(surplusTotal);
+            _receiver.transfer(surplusTotal);
+            _addContributor(_receiver, amountWei);
+            closeSale();
+            return;
+        }
+        
+        _addContributor(_receiver, amountWei);
     }
 
     function _addContributor(address _contributor, uint _amount) private {
-        heldTokens[_contributor] = heldTokens[_contributor].add(_amount);
-        emit Contribution(_contributor, _amount);
+        whiteList[_contributor] = whiteList[_contributor].sub(_amount);
+        uint amountToken = _amount.mul(exchangeRate);
+        heldTokens[_contributor] = heldTokens[_contributor].add(amountToken);
+        emit Contribution(_contributor, amountToken);
     }
 
     function refund() public {
@@ -91,6 +110,12 @@ contract Sale is Ownable, Token {
         } else {
             heldTokens[msg.sender] = amountToken;
         }
+    }
+
+    function _sendBeneficiary() private {
+        uint _amount = address(this).balance;
+        ETHWallet.transfer(_amount);
+        emit SendBeneficiary(ETHWallet, _amount);
     }
 
 }
